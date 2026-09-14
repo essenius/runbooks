@@ -1,0 +1,25 @@
+esphome:
+  name: esp32-flash-test
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+
+output:
+  - platform: gpio
+    pin: GPIO8
+    id: led_output
+
+light:
+  - platform: binary
+    name: "Test LED"
+    output: led_output
+    id: test_led
+
+interval:
+  - interval: 1s
+    then:
+      - light.toggle: test_led
