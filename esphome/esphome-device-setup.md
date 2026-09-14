@@ -1,92 +1,282 @@
-# ESPHome Device Setup
+# ESP32-C3 Development with USB/IP and WSL
 
-## Initial USB Flash
+This runbook describes how to connect an ESP32 development board connected to a Windows host to an ESPHome container running under Docker in WSL2.
 
-### 1. Connect the device
+The procedure uses `usbipd-win` to make the USB device available to WSL.
 
-Connect the ESP32 to Windows via USB.
+## Prerequisites
 
-### 2. Identify the USB device
+* Windows with WSL2
+* A Linux distribution installed in WSL
+* Docker Desktop with WSL integration enabled
+* `usbipd-win` installed on Windows
+* An ESP32 board connected by USB
+* ESPHome running in Docker
 
-In an elevated PowerShell:
+## 1. Identify the USB device
 
-    usbipd list
+Open PowerShell and run:
 
-Identify the ESP32 by its Espressif VID/PID, typically 303a:1001.
+```powershell
+usbipd list
+```
+
+Locate the ESP32 USB device. It should show a USB bus ID and the Espressif USB VID/PID.
 
 Example:
 
-    1-8    303a:1001    USB Serial Device (COM5), USB JTAG/serial debug unit
+```text
+Connected:
+BUSID  VID:PID    DEVICE                                  STATE
+1-8    303a:1001  USB Serial Device, USB JTAG/serial...  Not shared
+```
 
-The BUSID is device-dependent and may change when another device is connected.
+The bus ID is specific to the current Windows USB connection. **Do not assume it will always be the same.**
 
-### 3. Bind the device
+## 2. Share the USB device
 
-If the device is not already shared:
+The first time a particular USB device is used with USB/IP, run PowerShell as Administrator:
 
-    usbipd bind --busid <BUSID>
+```powershell
+usbipd bind --busid <BUSID>
+```
 
-### 4. Attach it to WSL
+For example:
 
-    usbipd attach --wsl --busid <BUSID>
+```powershell
+usbipd bind --busid 1-8
+```
 
-Verify in Ubuntu:
+Binding normally only needs to be done once for the device.
 
-    lsusb
-    ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+Verify with:
 
-For the ESP32-C3 SuperMini, this normally appears as:
+```powershell
+usbipd list
+```
 
-    /dev/ttyACM0
+The device should now be shown as shared.
 
-### 5. Make USB re-enumeration automatic
+## 3. Attach the device to WSL
 
-For ESP32 devices using native USB/JTAG, flashing/resetting can cause the USB device to disappear and re-enumerate.
+Run this from a normal PowerShell window:
 
-Start:
+```powershell
+usbipd attach --wsl --auto-attach --busid <BUSID>
+```
 
-    usbipd attach --wsl --auto-attach --busid <BUSID>
+`--auto-attach` is useful for ESP32 development because the USB device can temporarily disappear and re-enumerate when the ESP32 resets.
 
-Leave this command running while flashing.
+Leave this PowerShell process running while using the device.
 
-This also handles unplug/replug of the device.
+## 4. Verify the device in WSL
 
-### 6. Make the USB device available to Docker
+Open the WSL terminal and check that the device is present:
 
-The ESPHome Compose service needs the serial device mapped:
+```bash
+lsusb
+```
 
+For an ESP32-C3, the Espressif USB device should be visible.
+
+Then check the serial device:
+
+```bash
+ls -l /dev/ttyACM*
+```
+
+A typical result is:
+
+```text
+crw-rw---- 1 root dialout ... /dev/ttyACM0
+```
+
+The device may not always be assigned exactly the same `/dev/ttyACM*` number after reconnecting.
+
+## 5. Make the device available to Docker
+
+The ESPHome container needs access to the serial device.
+
+For Docker Compose:
+
+```yaml
+services:
+  esphome:
+    # ...
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
+```
 
-Recreate the container after changing Compose:
+Use the actual device name reported by WSL.
 
-    docker compose up -d
+### Important
 
-Verify:
+Attach the USB device to WSL **before creating the container**.
 
-    docker exec -it esphome ls -l /dev/ttyACM0
+If the container was created before `/dev/ttyACM0` existed, recreate it after attaching the device:
 
-### 7. Determine the ESP32 target
+```bash
+docker compose down
+docker compose up -d
+```
 
-For an unknown board, don't assume the ESP32 variant.
+## 6. Use a separate ESPHome test container
 
-The ESP32-C3 SuperMini used here requires:
+A separate ESPHome container is useful when testing a newer ESPHome version without changing the production installation.
 
-    esp32:
-      board: esp32-c3-devkitm-1
-      framework:
-        type: esp-idf
+Example:
 
-### 8. Initial flash
+```yaml
+services:
+  esphome-test:
+    image: ghcr.io/esphome/esphome:<ESP_HOME_VERSION>
+    container_name: esphome-test
+    privileged: true
+    restart: "no"
+    ports:
+      - "6053:6052"
+    volumes:
+      - ./config:/config
+      - /etc/localtime:/etc/localtime:ro
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+```
 
-From the ESPHome config directory:
+The port mapping is:
 
-    docker exec -it esphome esphome run <device>.yaml
+```text
+Windows/WSL host : container
+6053              : 6052
+```
 
-ESPHome should discover the serial device and perform the initial USB flash.
+This allows the test instance to coexist with an ESPHome instance using port 6052.
 
-### Notes
+The test container can then be accessed through port 6053.
 
-- `usbipd attach --auto-attach` is currently started manually. Automating it can be considered later if this becomes frequent.
-- The BUSID is not a stable device identifier; determine it with `usbipd list` when switching devices.
-- `/dev/ttyACM0` is currently used by the Docker mapping, but the serial device name may need revisiting if multiple USB serial devices are used simultaneously.
+## 7. Flash the ESP32
+
+Once the container is running and the device is mapped:
+
+```bash
+docker exec -it esphome-test esphome run /config/<CONFIG_FILE>.yaml
+```
+
+ESPHome should detect the serial device:
+
+```text
+Connected to ESP32-C3 on /dev/ttyACM0
+```
+
+After compilation and flashing, ESPHome should report that the upload completed successfully.
+
+## 8. Monitor the device
+
+The USB serial connection can also be used to monitor the device:
+
+```bash
+docker exec -it esphome-test esphome logs /config/<CONFIG_FILE>.yaml
+```
+
+This is particularly useful during initial hardware and firmware testing because it does not depend on Wi-Fi being operational.
+
+## 9. USB reset/re-enumeration
+
+An ESP32-C3 using its USB Serial/JTAG interface can reset and temporarily disappear from USB when firmware is flashed or restarted.
+
+With `--auto-attach` enabled, USB/IP should automatically reattach the device after it re-enumerates.
+
+If the device does not reappear:
+
+```powershell
+usbipd list
+```
+
+Then verify from WSL:
+
+```bash
+lsusb
+ls -l /dev/ttyACM*
+```
+
+If necessary, stop and restart the USB/IP attachment.
+
+## 10. Disconnecting
+
+When finished, stop the ESPHome test container if it is no longer needed:
+
+```bash
+docker compose down
+```
+
+Then stop the USB/IP attachment from the PowerShell window.
+
+The USB device can subsequently be used normally by Windows.
+
+---
+
+# ESP32-C3 Wi-Fi troubleshooting
+
+During testing of an ESP32-C3 SuperMini, Wi-Fi authentication failed repeatedly with:
+
+```text
+Disconnected ... reason='Auth Expired'
+```
+
+The failure occurred during Wi-Fi authentication despite a strong signal.
+
+The following tests were performed:
+
+* ESPHome production version: same failure
+* Newer ESPHome version: same failure
+* WPA2 configuration: confirmed
+* Wi-Fi power-save disabled: no improvement
+* Board moved away from the Windows laptop: no improvement
+* Default/high TX power: authentication failed
+* 15 dBm TX power: authentication failed
+* 10 dBm TX power: connected immediately
+
+The resulting working configuration was:
+
+```yaml
+wifi:
+  # ...
+  output_power: 10dB
+```
+
+This should be treated as a **device/environment-specific workaround**, not as a general ESP32-C3 requirement.
+
+The important observation is that the access point remained clearly receivable at the lower transmit power, so reducing TX power did not make the connection marginal.
+
+If investigating a similar problem, test `output_power` before making disruptive changes to the Wi-Fi infrastructure.
+
+---
+
+# Quick checklist
+
+```text
+Windows
+  |
+  +-- usbipd list
+  |
+  +-- usbipd bind --busid <BUSID>       # first time only
+  |
+  +-- usbipd attach --wsl --auto-attach --busid <BUSID>
+          |
+          v
+WSL
+  |
+  +-- lsusb
+  +-- ls -l /dev/ttyACM*
+          |
+          v
+Docker
+  |
+  +-- devices:
+  |     - /dev/ttyACM0:/dev/ttyACM0
+  |
+  +-- ESPHome
+          |
+          +-- compile
+          +-- flash
+          +-- monitor logs
+```
