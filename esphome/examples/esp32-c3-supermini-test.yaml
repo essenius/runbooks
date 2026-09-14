@@ -1,5 +1,7 @@
 esphome:
   name: esp32-flash-test
+  platformio_options:
+    upload_port: /dev/ttyACM0
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -7,6 +9,23 @@ esp32:
     type: esp-idf
 
 logger:
+ level: DEBUG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # quirk in the super mini: default power causes auth failures.
+  output_power: 10dB
+
+  ap:
+    ssid: !secret wifi_fallback_ssid
+    password: !secret wifi_fallback_password
+
+captive_portal:
+
+web_server:
+
+api:
 
 output:
   - platform: gpio
@@ -23,3 +42,6 @@ interval:
   - interval: 1s
     then:
       - light.toggle: test_led
+      - logger.log:
+          format: "TEST: heartbeat"
+          level: INFO
